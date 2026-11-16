@@ -32,17 +32,19 @@ TZ_HOURS = 3         # Türkiye, yıl boyu UTC+3
 # (veri kümesi kimlikleri; sürüm eki yok, araç güncel sürümü seçer), değişkenler, kapsama kutusu, derinlik var mı, en çok uzaklık km
 WAVE_SOURCES = [
     (['cmems_mod_blk_wav_anfc_2.5km_PT1H-i'], ['VHM0'], (40.5, 47.33, 27.25, 42.0), False, 8),
-    (['cmems_mod_med_wav_anfc_4.2km_PT1H-i'], ['VHM0'], (30.19, 45.98, -18.13, 36.29), False, 12),
+    (['cmems_mod_med_wav_anfc_4.2km_PT1H-i'], ['VHM0'], (30.19, 45.98, -18.13, 36.29), False, 20),
+    # Marmara iki bölgesel dalga modelinde de yok: küresel model (yaklaşık 9 km, 3 saatlik)
+    (['cmems_mod_glo_wav_anfc_0.083deg_PT3H-i'], ['VHM0'], (-90.0, 90.0, -180.0, 180.0), False, 15),
 ]
 TEMP_SOURCES = [
     (['cmems_mod_blk_phy-temp_anfc_mrm-500m_PT1H-i', 'cmems_mod_blk_phy-tem_anfc_mrm-500m_PT1H-i'], ['thetao'], (39.5, 41.5, 25.0, 30.0), True, 4),
     (['cmems_mod_blk_phy-temp_anfc_2.5km_PT1H-m', 'cmems_mod_blk_phy-tem_anfc_2.5km_PT1H-m'], ['thetao'], (40.5, 47.33, 27.25, 42.0), True, 8),
-    (['cmems_mod_med_phy-temp_anfc_4.2km-2D_PT1H-m', 'cmems_mod_med_phy-tem_anfc_4.2km-2D_PT1H-m'], ['thetao'], (30.19, 45.98, -17.29, 36.29), False, 12),
+    (['cmems_mod_med_phy-temp_anfc_4.2km-2D_PT1H-m', 'cmems_mod_med_phy-tem_anfc_4.2km-2D_PT1H-m'], ['thetao'], (30.19, 45.98, -17.29, 36.29), False, 20),
 ]
 CURRENT_SOURCES = [
     (['cmems_mod_blk_phy-cur_anfc_mrm-500m_PT1H-i'], ['uo', 'vo'], (39.5, 41.5, 25.0, 30.0), True, 4),
     (['cmems_mod_blk_phy-cur_anfc_2.5km_PT1H-m'], ['uo', 'vo'], (40.5, 47.33, 27.25, 42.0), True, 8),
-    (['cmems_mod_med_phy-cur_anfc_4.2km-2D_PT1H-m'], ['uo', 'vo'], (30.19, 45.98, -17.29, 36.29), False, 12),
+    (['cmems_mod_med_phy-cur_anfc_4.2km-2D_PT1H-m'], ['uo', 'vo'], (30.19, 45.98, -17.29, 36.29), False, 20),
 ]
 
 
@@ -121,6 +123,9 @@ def fill(target, key, values):
 
 # ---------------------------------------------------------------- Copernicus (copernicusmarine + xarray)
 
+STATUS = []  # kaynak başına doldurulan nokta sayısı (out/durum.json)
+
+
 def annotate(level, msg):
     """GitHub Actions açıklaması: herkese açık depoda giriş yapmadan da okunur (tek satır)"""
     print(f'::{level}::' + ' | '.join(str(msg).splitlines())[:900], flush=True)
@@ -193,14 +198,18 @@ def extract(sources, points, t0, t1, log):
             if ij:
                 picks.append((key, ij))
         log(f'  {ds_id}: {len(picks)} nokta')
+        STATUS.append({'id': ds_id, 'points': len(picks)})
         if not picks:
             continue
         ii = xr.DataArray([p[1][0] for p in picks], dims='p')
         jj = xr.DataArray([p[1][1] for p in picks], dims='p')
         times = ds['time'].values.astype('datetime64[ns]')
+        # 3 saatlik üründe her saat en yakın adımı alır (tolerans adımın yarısı)
+        step_min = int(np.median(np.diff(times)) / np.timedelta64(1, 'm')) if len(times) > 1 else 60
+        tol = max(31, step_min // 2 + 1)
         for var in variables:
             vals = ds[var].isel(latitude=ii, longitude=jj).values  # [time, p]
-            aligned = align_hourly(times, vals, np.datetime64(t0, 'ns'), HOURS)
+            aligned = align_hourly(times, vals, np.datetime64(t0, 'ns'), HOURS, tol)
             for k, (key, _) in enumerate(picks):
                 result.setdefault(key, {})
                 fill(result[key], var, aligned[:, k])
@@ -245,6 +254,10 @@ def main(argv):
     with open(os.path.join(out_dir, 'deniz.json'), 'w', encoding='utf-8') as f:
         json.dump(sea, f, ensure_ascii=False, separators=(',', ':'))
     log(f"deniz.json: {len(sea['points'])}/{len(points)} nokta")
+    counts = {f: sum(1 for r in sea['points'].values() if f in r) for f in ('w', 't', 's')}
+    with open(os.path.join(out_dir, 'durum.json'), 'w', encoding='utf-8') as f:
+        json.dump({'generatedAt': generated, 'points': len(points), 'filled': len(sea['points']), 'fields': counts,
+                   'sources': STATUS, 'missing': [k for k, _, _ in points if k not in sea['points']]}, f, ensure_ascii=False, indent=1)
 
     for area in pts['currents']:
         out_cells = []
