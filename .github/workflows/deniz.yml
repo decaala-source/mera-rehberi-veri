@@ -1,0 +1,51 @@
+# Her sabah Copernicus deniz tahminini alır, gizlilik/koşul sayfalarıyla birlikte GitHub Pages'e yayınlar.
+# Kimlik bilgileri: Settings > Secrets and variables > Actions >
+#   COPERNICUSMARINE_SERVICE_USERNAME, COPERNICUSMARINE_SERVICE_PASSWORD
+# Veri alınamazsa yayın yapılmaz; önceki gün yayınlanan dosyalar yerinde kalır.
+name: Deniz verisi
+
+on:
+  schedule:
+    - cron: '30 3 * * *'   # her gün 06:30 (Türkiye saati)
+  workflow_dispatch:         # Actions sekmesinden elle de çalıştırılabilir
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python test_core.py
+      - name: Copernicus verisini al
+        run: python fetch_copernicus.py
+        env:
+          COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
+          COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
+      - name: Sayfaları ekle
+        run: cp -r site/. out/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
