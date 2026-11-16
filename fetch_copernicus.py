@@ -121,6 +121,20 @@ def fill(target, key, values):
 
 # ---------------------------------------------------------------- Copernicus (copernicusmarine + xarray)
 
+def annotate(level, msg):
+    """GitHub Actions açıklaması: herkese açık depoda giriş yapmadan da okunur (tek satır)"""
+    print(f'::{level}::' + ' | '.join(str(msg).splitlines())[:900], flush=True)
+
+
+class LoginError(Exception):
+    """Copernicus kullanıcı adı/parola reddedildi: diğer ürünleri denemenin anlamı yok"""
+
+
+def is_login_error(e):
+    s = str(e).lower()
+    return 'credential' in s or 'unauthorized' in s or '401' in s or 'invalid username' in s
+
+
 def open_ds(ids, variables, bbox, t0, t1, has_depth):
     import copernicusmarine  # noqa: PLC0415  (yalnızca Actions'ta kurulu)
     last = None
@@ -162,7 +176,10 @@ def extract(sources, points, t0, t1, log):
         try:
             ds_id, ds = open_ds(ids, variables, box, t0, t1, has_depth)
         except Exception as e:
+            if is_login_error(e):
+                raise LoginError(str(e)) from e
             log(f'  ATLANDI {ids[0]}: {e}')
+            annotate('warning', f'{ids[0]} açılamadı: {e}')
             continue
         lats, lons = ds['latitude'].values, ds['longitude'].values
         first = ds[variables[0]].isel(time=0).values
@@ -246,4 +263,16 @@ def main(argv):
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1:]))
+    try:
+        code = main(sys.argv[1:])
+    except LoginError as e:
+        annotate('error', 'Copernicus girişi reddedildi. COPERNICUSMARINE_SERVICE_USERNAME / PASSWORD secret değerlerini '
+                 've Copernicus hesabının e-posta onayını kontrol et. Ayrıntı: ' + str(e)[:300])
+        sys.exit(2)
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        annotate('error', f'{type(e).__name__}: {e} | ' + traceback.format_exc()[-600:])
+        raise
+    if code:
+        annotate('error', 'Hiçbir noktaya veri yazılamadı (yukarıdaki uyarılara bak).')
+    sys.exit(code)
